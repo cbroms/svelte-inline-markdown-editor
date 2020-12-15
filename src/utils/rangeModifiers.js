@@ -1,39 +1,39 @@
-// fanstatic solution from
-// https://stackoverflow.com/a/38479462
-export function saveCaretPosition(id) {
-	const context = document.getElementById(id);
+import { locations } from "./stringModifiers";
 
+const getSelectionAndPosition = (element) => {
 	const selection = window.getSelection();
 	const range = selection.getRangeAt(0);
-	range.setStart(context, 0);
-	const len = range.toString().length;
+	range.setStart(element, 0);
+	const position = range.toString().length;
 
-	return function restore() {
-		const pos = getTextNodeAtPosition(context, len);
+	return [selection, position];
+};
+
+// fanstatic solution from
+// https://stackoverflow.com/a/38479462
+export const saveCaretPosition = (element, offset = 0) => {
+	const [selection, position] = getSelectionAndPosition(element);
+
+	return () => {
+		// restore the position of the cursor
+		const pos = getTextNodeAtPosition(element, position + offset);
 		selection.removeAllRanges();
 		const range = new Range();
 		range.setStart(pos.node, pos.position);
 		selection.addRange(range);
 	};
-}
+};
 
-export function getCaretPosition(id) {
-	const context = document.getElementById(id);
+export const getCaretPosition = (element) => {
+	const [selection, position] = getSelectionAndPosition(element);
+	return getTextNodeAtPosition(element, position);
+};
 
-	const selection = window.getSelection();
-	const range = selection.getRangeAt(0);
-	range.setStart(context, 0);
-	const len = range.toString().length;
-
-	return getTextNodeAtPosition(context, len);
-}
-
-export function getTextNodeAtPosition(root, index) {
-	const NODE_TYPE = NodeFilter.SHOW_TEXT;
-	var treeWalker = document.createTreeWalker(
+export const getTextNodeAtPosition = (root, index) => {
+	const treeWalker = document.createTreeWalker(
 		root,
-		NODE_TYPE,
-		function next(elem) {
+		NodeFilter.SHOW_TEXT,
+		(elem) => {
 			if (index > elem.textContent.length) {
 				index -= elem.textContent.length;
 				return NodeFilter.FILTER_REJECT;
@@ -41,9 +41,9 @@ export function getTextNodeAtPosition(root, index) {
 			return NodeFilter.FILTER_ACCEPT;
 		}
 	);
-	var c = treeWalker.nextNode();
+	const c = treeWalker.nextNode();
 	return {
 		node: c ? c : root,
 		position: index,
 	};
-}
+};

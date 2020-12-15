@@ -4,21 +4,22 @@
 	// export let html;
 
 	let html = "hello, welcome!";
-	let htmlToAdd = null;
+	let textToAdd = null;
 
 	const updateHtml = () => {
-		htmlToAdd = "testing";
+		const choices = ["**this is pretty easy to do tbh**", "_I'm making an important point_", "*italics are fun*"]
+  		textToAdd =  choices[Math.floor(Math.random() * choices.length)];
 	};
 
 	afterUpdate(() => {
-		if (htmlToAdd !== null) {
+		if (textToAdd !== null) {
 			// reset the html to nothing
-			htmlToAdd = null;
+			textToAdd = null;
 		}
 	});
 </script>
 
 <main>
-	<!-- <button on:click="{updateHtml}">add content</button> -->
-	<Editor {html} {htmlToAdd} />
+	<button on:click="{updateHtml}">add content</button>
+	<Editor {html} {textToAdd} />
 </main>

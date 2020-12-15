@@ -1,30 +1,19 @@
 <script>
 	import { afterUpdate } from "svelte";
 	import {saveCaretPosition, getCaretPosition} from "./utils/rangeModifiers"
+	import {makePairsOfMatchingIndecies} from "./utils/stringModifiers"
+
 	export let html;
-	export let htmlToAdd;
+	export let textToAdd;
 
 	const entities = [{e: "**", t: ["<b>", "</b>"]}, {e: "__", t: ["<strong>", "</strong>"]}, {e: "*", t: ["<em>", "</em>"]}, {e: "_", t: ["<em>", "</em>"]}, {e: "`", t: ["<code>", "</code>"]}, {e: "#", t: ["<cite>", "</cite>"]}]
 
-	let restore = null;
+	let setCursorPosition = null;
+	let editorElement = null;
 
+	const checkForMissingMarkdownAndRemoveTags = (entity, tags, html) => {
 
-	const locations = (substring, string) => {
-		let a = [];
-		let i = -1;
-		while ((i = string.indexOf(substring, i + 1)) >= 0) a.push(i);
-		return a;
-	};
-
-	function checkForMissingMarkdownAndRemoveTags(entity, tags, html) {
-
-		const locs = locations(entity, html);
-
-		const pairs = locs.reduce((res, v, i, arr) => {
-			if (i % 2 === 0) res.push(arr.slice(i, i + 2));
-			return res;
-		}, []);
-
+		const pairs = makePairsOfMatchingIndecies(entity, html)
 		for (const pair of pairs) {
 			if (pair.length === 1) {
 				// determine if this is the start or end of a tag 
@@ -53,15 +42,9 @@
 
 	}
 
-	function checkForMarkdownAndInsertTags(entity, tags, html) {
+	const checkForMarkdownAndInsertTags = (entity, tags, html) => {
 
-		const locs = locations(entity, html);
-
-		const pairs = locs.reduce((res, v, i, arr) => {
-			if (i % 2 === 0) res.push(arr.slice(i, i + 2));
-			return res;
-		}, []);
-
+		const pairs = makePairsOfMatchingIndecies(entity, html)
 		for (const pair of pairs) {
 			if (pair.length === 2 && pair[0] + 1 !== pair[1] ) {
 
@@ -90,31 +73,39 @@
 
 	}
 
+	const insertTextAtCursor = (text) => {
+		// reset the cursor position after the inserted text 
+		setCursorPosition = saveCaretPosition(editorElement, text.length);
+
+		const pos = getCaretPosition(editorElement)
+		// insert the new text in the element
+		const c = pos.node.textContent;
+		const n = c.substring(0, pos.position) + text + c.substring(pos.position)
+		pos.node.textContent = n;
+
+		// set the cursor at the updated position
+		setCursorPosition();
+
+		// save the cursor pos again because we're about to reformat 
+		setCursorPosition = saveCaretPosition(editorElement);
+		// reassign html with its own content so we force a reformatting of the 
+		// new content in the case it included markdown
+		html = editorElement.innerHTML
+
+	}
+
 	afterUpdate(() => {
-		if (restore !== null) {
-			restore();
-			restore = null;
+		if (setCursorPosition !== null) {
+			// once the formatting has been updated, reset the curor position 
+			setCursorPosition();
+			setCursorPosition = null;
 		}
-		
 	});
 
 	$: {
-
-		console.log("hi")
-		// insert any html 
-		if (htmlToAdd !== null) {
-
-
-
-			restore = saveCaretPosition("editable");
-
-			const pos = getCaretPosition("editable")
-			html = html.substring(0, pos) + htmlToAdd + html.substring(pos + 1)
-
-			console.log(pos)
-
-			
-			// insertTextAtCursor(htmlToAdd)
+		// insert any text 
+		if (textToAdd !== undefined && textToAdd !== null) {
+			insertTextAtCursor(textToAdd)
 		}
 
 		const checkAllMarkdown = () => {
@@ -131,60 +122,40 @@
 
 		const res = checkAllMarkdown()
 
+		// we updated formatting
 		if (res !== undefined) {
-			// record the caret pos
-			restore = saveCaretPosition("editable");
+			// record the caret pos so we can reset it after updating content
+			setCursorPosition = saveCaretPosition(editorElement);
+			// set the updated HTML with the new fomatting
 			html = res
 		}
-		
-
-		
 	}
 
-	// function insertTextAtCursor(text) {
-	//     var sel, range, textNode;
-	//     if (window.getSelection) {
-	//         sel = window.getSelection();
-	//         if (sel.getRangeAt && sel.rangeCount) {
-	//             range = sel.getRangeAt(0).cloneRange();
-	//             range.deleteContents();
-	//             textNode = document.createTextNode(text);
-	//             range.insertNode(textNode);
-
-	//             // Move caret to the end of the newly inserted text node
-	//             range.setStart(textNode, textNode.length);
-	//             range.setEnd(textNode, textNode.length);
-	//             sel.removeAllRanges();
-	//             sel.addRange(range);
-	//         }
-	//     } else if (document.selection && document.selection.createRange) {
-	//         range = document.selection.createRange();
-	//         range.pasteHTML(text);
-	//     }
-	// }
 
 	const onKeyDown = (e) => {
-		// console.log(e)
-		// if (e.key === "*") {
-		// 	e.preventDefault();
-		// 	// get the previous <em> tag
-		// 	const o = html.lastIndexOf("<em>");
-		// 	const c = html.lastIndexOf("</em>");
-		// 	if (o > c || o === c) {
-		// 		insertTextAtCursor("*<em>");
-		// 	} else if (c > o || ) {
-		// 		insertTextAtCursor("</em>*");
-		// 	}
-		// }
+		// TODO: keep track of which key was pressed and if it was one of the ones
+		// in a markdown entity, reformat the text. Otherwise don't recheck formatting.
 	};
+
+	const onPaste = (e) => {
+
+	    const clipboardData = e.clipboardData || window.clipboardData;
+	    // get the text version of pasted data, not including any html
+	    const pastedData = clipboardData.getData('Text');
+   		
+   		// insert the content into the current cursor position 
+   		insertTextAtCursor(pastedData)
+	}
 </script>
 
 <main>
 	<div
 		id="editable"
 		contenteditable="true"
+		bind:this={editorElement}
 		bind:innerHTML="{html}"
 		on:keydown="{onKeyDown}"
+		on:paste|preventDefault|stopPropagation="{onPaste}"
 	></div>
 </main>
 
