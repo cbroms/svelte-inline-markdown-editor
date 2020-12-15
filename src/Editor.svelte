@@ -99,6 +99,8 @@
 	});
 
 	$: {
+
+		console.log("hi")
 		// insert any html 
 		if (htmlToAdd !== null) {
 

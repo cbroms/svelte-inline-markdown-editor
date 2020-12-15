@@ -1,6 +1,6 @@
 <script>
 	import { afterUpdate } from "svelte";
-	import Editor from "./Editor.svelte";
+	import Editor from "../src/Editor.svelte";
 	// export let html;
 
 	let html = "hello, welcome!";
