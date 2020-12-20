@@ -31,25 +31,27 @@ export const checkForMissingMarkdownAndRemoveTags = (entity, tags, html) => {
 				const end = html.substring(pair[0]).indexOf(tags[1]) + html.substring(0, pair[0]).length;
 			
 				// now remove both the opening and closing tags 
-				return html.substring(0, pair[0] + entity.length) + 
-						html.substring(pair[0] + tags[0].length + 
-						entity.length, end) + html.substring(end + tags[1].length)
+				const newHtml = html.substring(0, pair[0] + entity.length) + 
+								html.substring(pair[0] + tags[0].length + 
+								entity.length, end) + html.substring(end + tags[1].length)
+				return [newHtml, null, null]
 			
 			} else if (post === tags[1]) {
 				// this is the second tag, so there's an unmatched opening tag 
 				const start = html.substring(0, pair[0]).lastIndexOf(tags[0])
-				return html.substring(0, start) + 
-						html.substring(start + tags[0].length, pair[0] - tags[1].length) + 
-						html.substring(pair[0])
-
+				const newHtml = html.substring(0, start) + 
+								html.substring(start + tags[0].length, pair[0] - tags[1].length) + 
+								html.substring(pair[0])
+				return [newHtml, null, null]
 			}
 		}
 	}
 }
 
-export const checkForMarkdownAndInsertTags = (entity, tags, html) => {
+export const checkForMarkdownAndInsertTags = (entity, tags, html, entities) => {
 
 	const pairs = makePairsOfMatchingIndecies(entity, html)
+
 	for (const pair of pairs) {
 		if (pair.length === 2 && pair[0] + 1 !== pair[1] ) {
 
@@ -62,15 +64,30 @@ export const checkForMarkdownAndInsertTags = (entity, tags, html) => {
 				// we're before the first instance of the tag, do nothing
 				return;
 			} else if (pre !== tags[0] && post !== tags[1]) {
-			
+
+				let opHtml = html
+				let start = pair[0]
+				let end = pair[1]
+
+				// check if one of the other tags is already there
+				for (const entity of entities) {
+					// if pre contains the first tag
+					if (pre.indexOf(entity.t[0]) > -1) {
+						// strip out those tags  
+						const cleanedSection = html.substring(start, end).replace(entity.t[0], "").replace(entity.t[1], "")
+						opHtml = html.substring(0, start) + cleanedSection + html.substring(end)
+						// remove the length of the old tags from the end position
+						end -= entity.t[1].length + entity.t[0].length
+						break;
+					}	
+				}
 				// add the tags and stop searching for more things to fix
-				return (
-					html.substring(0, pair[0] + entity.length) +
-					tags[0] +
-					html.substring(pair[0] + entity.length, pair[1]) +
-					tags[1] +
-					html.substring(pair[1], html.length)
-					)
+				const newHtml = opHtml.substring(0, start + entity.length) +
+								tags[0] +
+								opHtml.substring(start + entity.length, end) +
+								tags[1] +
+								opHtml.substring(end)
+				return [newHtml, start + entity.length, end]
 			}
 		}
 	}
@@ -79,7 +96,7 @@ export const checkForMarkdownAndInsertTags = (entity, tags, html) => {
 
 export const checkAllMarkdown = (entities, html) => {
 	for (const entity of entities) {
-		const h = checkForMarkdownAndInsertTags(entity.e, entity.t, html)
+		const h = checkForMarkdownAndInsertTags(entity.e, entity.t, html, entities)
 		if (h !== undefined) {
 			return h
 		} else {

@@ -1,8 +1,12 @@
 import { locations } from "./stringModifiers";
 
-const getSelectionAndPosition = (element) => {
+export const getRange = () => {
 	const selection = window.getSelection();
-	const range = selection.getRangeAt(0);
+	return [selection.getRangeAt(0), selection];
+}
+
+export const getSelectionAndPosition = (element) => {
+	const [range, selection] = getRange()
 	range.setStart(element, 0);
 	const position = range.toString().length;
 
