@@ -4,7 +4,7 @@
   "module": "dist/index.mjs",
   "main": "dist/index.js",
   "scripts": {
-    "build demo": "rollup -c rollup.config.dev.js",
+    "buildd": "rollup -c rollup.config.dev.js",
     "build": "rollup -c rollup.config.build.js",
     "dev": "rollup -c rollup.config.dev.js -w",
     "start": "sirv demo/public"

@@ -1,77 +1,23 @@
 <script>
-	import { afterUpdate } from "svelte";
-	import {saveCaretPosition, getCaretPosition} from "./utils/rangeModifiers"
-	import {makePairsOfMatchingIndecies} from "./utils/stringModifiers"
+	import { afterUpdate, createEventDispatcher } from "svelte";
+	import { saveCaretPosition, getCaretPosition } from "./utils/rangeModifiers"
+	import { checkAllMarkdown } from "./utils/stringModifiers"
 
-	export let html;
-	export let textToAdd;
+	export let text = "";
+	export let entities = [{e: "**", t: ["<strong>", "</strong>"]}, {e: "__", t: ["<strong>", "</strong>"]}, {e: "*", t: ["<em>", "</em>"]}, {e: "_", t: ["<em>", "</em>"]}, {e: "`", t: ["<code>", "</code>"]}, {e: "#", t: ["<cite>", "</cite>"]}]
+	export let textToAdd = null;
 
-	const entities = [{e: "**", t: ["<b>", "</b>"]}, {e: "__", t: ["<strong>", "</strong>"]}, {e: "*", t: ["<em>", "</em>"]}, {e: "_", t: ["<em>", "</em>"]}, {e: "`", t: ["<code>", "</code>"]}, {e: "#", t: ["<cite>", "</cite>"]}]
+	const dispatch = createEventDispatcher();
 
 	let setCursorPosition = null;
 	let editorElement = null;
+	let thisHtml = ""
+	let thisText = text;
 
-	const checkForMissingMarkdownAndRemoveTags = (entity, tags, html) => {
+	// // check the initial text to see if there's anything to parse
+	const r = checkAllMarkdown(entities, text)
+	r !== undefined ? thisHtml = r : thisHtml = thisText
 
-		const pairs = makePairsOfMatchingIndecies(entity, html)
-		for (const pair of pairs) {
-			if (pair.length === 1) {
-				// determine if this is the start or end of a tag 
-				const pre = html.substring(pair[0] + entity.length, pair[0] + tags[0].length + entity.length);
-				const post = html.substring(pair[0] - tags[1].length, pair[0]);
-
-				if (pre === tags[0]) {
-					// this is the first tag, so there's an unmatched closing tag after it somewhere 
-					const end = html.substring(pair[0]).indexOf(tags[1]) + html.substring(0, pair[0]).length;
-				
-					// now remove both the opening and closing tags 
-					return html.substring(0, pair[0] + entity.length) + 
-							html.substring(pair[0] + tags[0].length + 
-							entity.length, end) + html.substring(end + tags[1].length)
-				
-				} else if (post === tags[1]) {
-					// this is the second tag, so there's an unmatched opening tag 
-					const start = html.substring(0, pair[0]).lastIndexOf(tags[0])
-					return html.substring(0, start) + 
-							html.substring(start + tags[0].length, pair[0] - tags[1].length) + 
-							html.substring(pair[0])
-
-				}
-			}
-		}
-
-	}
-
-	const checkForMarkdownAndInsertTags = (entity, tags, html) => {
-
-		const pairs = makePairsOfMatchingIndecies(entity, html)
-		for (const pair of pairs) {
-			if (pair.length === 2 && pair[0] + 1 !== pair[1] ) {
-
-				// get the positions that the tags should exist if they did 
-				const pre = html.substring(pair[0] + entity.length, pair[0] + tags[0].length + entity.length);
-				const pre2 = html.substring(pair[1] + entity.length, pair[1] + tags[0].length + entity.length);
-				const post = html.substring(pair[1] - tags[1].length, pair[1]);
-
-				if (pre2 === tags[0]) {
-					// we're before the first instance of the tag, do nothing
-					return;
-				} else if (pre !== tags[0] && post !== tags[1]) {
-				
-					// add the tags and stop searching for more things to fix
-					return (
-						html.substring(0, pair[0] + entity.length) +
-						tags[0] +
-						html.substring(pair[0] + entity.length, pair[1]) +
-						tags[1] +
-						html.substring(pair[1], html.length)
-						)
-				}
-			}
-		}
-
-
-	}
 
 	const insertTextAtCursor = (text) => {
 		// reset the cursor position after the inserted text 
@@ -90,8 +36,17 @@
 		setCursorPosition = saveCaretPosition(editorElement);
 		// reassign html with its own content so we force a reformatting of the 
 		// new content in the case it included markdown
-		html = editorElement.innerHTML
+		thisHtml = editorElement.innerHTML
+	}
 
+	const dispatchContentChange = () => {
+		if (editorElement !== null) {
+			// dispatch that the content has changed with both text and html
+			dispatch("contentChange", {
+				text: thisText,
+				html: thisHtml
+			})
+		}
 	}
 
 	afterUpdate(() => {
@@ -100,6 +55,8 @@
 			setCursorPosition();
 			setCursorPosition = null;
 		}
+		
+		dispatchContentChange()
 	});
 
 	$: {
@@ -108,26 +65,14 @@
 			insertTextAtCursor(textToAdd)
 		}
 
-		const checkAllMarkdown = () => {
-			for (const entity of entities) {
-				const h = checkForMarkdownAndInsertTags(entity.e, entity.t, html)
-				if (h !== undefined) {
-					return h
-				} else {
-					const n = checkForMissingMarkdownAndRemoveTags(entity.e, entity.t, html)
-					if (n !== undefined) return n
-				}
-			}
-		}
-
-		const res = checkAllMarkdown()
+		const res = checkAllMarkdown(entities, thisHtml)
 
 		// we updated formatting
-		if (res !== undefined) {
+		if (res !== undefined && editorElement !== null) {
 			// record the caret pos so we can reset it after updating content
 			setCursorPosition = saveCaretPosition(editorElement);
 			// set the updated HTML with the new fomatting
-			html = res
+			thisHtml = res
 		}
 	}
 
@@ -153,8 +98,9 @@
 		id="editable"
 		contenteditable="true"
 		bind:this={editorElement}
-		bind:innerHTML="{html}"
-		on:keydown="{onKeyDown}"
+		bind:textContent={thisText}
+		bind:innerHTML={thisHtml}
+		on:keydown={onKeyDown}
 		on:paste|preventDefault|stopPropagation="{onPaste}"
 	></div>
 </main>
@@ -163,9 +109,8 @@
 	div {
 		box-sizing: border-box;
 		padding: 10px;
-		margin: 40px auto;
 		border: 1px solid black;
-		max-width: 400px;
+		width: 100%;
 	}
 
 	div:focus {

@@ -4,6 +4,12 @@ var app = (function () {
     'use strict';
 
     function noop() { }
+    function assign(tar, src) {
+        // @ts-ignore
+        for (const k in src)
+            tar[k] = src[k];
+        return tar;
+    }
     function add_location(element, file, line, column, char) {
         element.__svelte_meta = {
             loc: { file, line, column, char }
@@ -26,6 +32,42 @@ var app = (function () {
     }
     function is_empty(obj) {
         return Object.keys(obj).length === 0;
+    }
+    function create_slot(definition, ctx, $$scope, fn) {
+        if (definition) {
+            const slot_ctx = get_slot_context(definition, ctx, $$scope, fn);
+            return definition[0](slot_ctx);
+        }
+    }
+    function get_slot_context(definition, ctx, $$scope, fn) {
+        return definition[1] && fn
+            ? assign($$scope.ctx.slice(), definition[1](fn(ctx)))
+            : $$scope.ctx;
+    }
+    function get_slot_changes(definition, $$scope, dirty, fn) {
+        if (definition[2] && fn) {
+            const lets = definition[2](fn(dirty));
+            if ($$scope.dirty === undefined) {
+                return lets;
+            }
+            if (typeof lets === 'object') {
+                const merged = [];
+                const len = Math.max($$scope.dirty.length, lets.length);
+                for (let i = 0; i < len; i += 1) {
+                    merged[i] = $$scope.dirty[i] | lets[i];
+                }
+                return merged;
+            }
+            return $$scope.dirty | lets;
+        }
+        return $$scope.dirty;
+    }
+    function update_slot(slot, slot_definition, ctx, $$scope, dirty, get_slot_changes_fn, get_slot_context_fn) {
+        const slot_changes = get_slot_changes(slot_definition, $$scope, dirty, get_slot_changes_fn);
+        if (slot_changes) {
+            const slot_context = get_slot_context(slot_definition, ctx, $$scope, get_slot_context_fn);
+            slot.p(slot_context, slot_changes);
+        }
     }
 
     function append(target, node) {
@@ -90,6 +132,20 @@ var app = (function () {
     }
     function afterUpdate(fn) {
         get_current_component().$$.after_update.push(fn);
+    }
+    function createEventDispatcher() {
+        const component = get_current_component();
+        return (type, detail) => {
+            const callbacks = component.$$.callbacks[type];
+            if (callbacks) {
+                // TODO are there situations where events could be dispatched
+                // in a server (non-DOM) environment?
+                const event = custom_event(type, detail);
+                callbacks.slice().forEach(fn => {
+                    fn.call(component, event);
+                });
+            }
+        };
     }
 
     const dirty_components = [];
@@ -339,6 +395,13 @@ var app = (function () {
         else
             dispatch_dev('SvelteDOMSetAttribute', { node, attribute, value });
     }
+    function set_data_dev(text, data) {
+        data = '' + data;
+        if (text.wholeText === data)
+            return;
+        dispatch_dev('SvelteDOMSetData', { node: text, data });
+        text.data = data;
+    }
     function validate_slots(name, slot, keys) {
         for (const slot_key of Object.keys(slot)) {
             if (!~keys.indexOf(slot_key)) {
@@ -382,6 +445,79 @@ var app = (function () {
     	}, []);
 
     	return pairs;
+    };
+
+
+    const checkForMissingMarkdownAndRemoveTags = (entity, tags, html) => {
+
+    	const pairs = makePairsOfMatchingIndecies(entity, html);
+    	for (const pair of pairs) {
+    		if (pair.length === 1) {
+    			// determine if this is the start or end of a tag 
+    			const pre = html.substring(pair[0] + entity.length, pair[0] + tags[0].length + entity.length);
+    			const post = html.substring(pair[0] - tags[1].length, pair[0]);
+
+    			if (pre === tags[0]) {
+    				// this is the first tag, so there's an unmatched closing tag after it somewhere 
+    				const end = html.substring(pair[0]).indexOf(tags[1]) + html.substring(0, pair[0]).length;
+    			
+    				// now remove both the opening and closing tags 
+    				return html.substring(0, pair[0] + entity.length) + 
+    						html.substring(pair[0] + tags[0].length + 
+    						entity.length, end) + html.substring(end + tags[1].length)
+    			
+    			} else if (post === tags[1]) {
+    				// this is the second tag, so there's an unmatched opening tag 
+    				const start = html.substring(0, pair[0]).lastIndexOf(tags[0]);
+    				return html.substring(0, start) + 
+    						html.substring(start + tags[0].length, pair[0] - tags[1].length) + 
+    						html.substring(pair[0])
+
+    			}
+    		}
+    	}
+    };
+
+    const checkForMarkdownAndInsertTags = (entity, tags, html) => {
+
+    	const pairs = makePairsOfMatchingIndecies(entity, html);
+    	for (const pair of pairs) {
+    		if (pair.length === 2 && pair[0] + 1 !== pair[1] ) {
+
+    			// get the positions that the tags should exist if they did 
+    			const pre = html.substring(pair[0] + entity.length, pair[0] + tags[0].length + entity.length);
+    			const pre2 = html.substring(pair[1] + entity.length, pair[1] + tags[0].length + entity.length);
+    			const post = html.substring(pair[1] - tags[1].length, pair[1]);
+
+    			if (pre2 === tags[0]) {
+    				// we're before the first instance of the tag, do nothing
+    				return;
+    			} else if (pre !== tags[0] && post !== tags[1]) {
+    			
+    				// add the tags and stop searching for more things to fix
+    				return (
+    					html.substring(0, pair[0] + entity.length) +
+    					tags[0] +
+    					html.substring(pair[0] + entity.length, pair[1]) +
+    					tags[1] +
+    					html.substring(pair[1], html.length)
+    					)
+    			}
+    		}
+    	}
+    };
+
+
+    const checkAllMarkdown = (entities, html) => {
+    	for (const entity of entities) {
+    		const h = checkForMarkdownAndInsertTags(entity.e, entity.t, html);
+    		if (h !== undefined) {
+    			return h
+    		} else {
+    			const n = checkForMissingMarkdownAndRemoveTags(entity.e, entity.t, html);
+    			if (n !== undefined) return n
+    		}
+    	}
     };
 
     const getSelectionAndPosition = (element) => {
@@ -432,8 +568,8 @@ var app = (function () {
     	};
     };
 
-    /* src\Editor.svelte generated by Svelte v3.31.0 */
-    const file = "src\\Editor.svelte";
+    /* src/Editor.svelte generated by Svelte v3.31.0 */
+    const file = "src/Editor.svelte";
 
     function create_fragment(ctx) {
     	let main;
@@ -447,10 +583,10 @@ var app = (function () {
     			div = element("div");
     			attr_dev(div, "id", "editable");
     			attr_dev(div, "contenteditable", "true");
-    			attr_dev(div, "class", "svelte-1ucb901");
-    			if (/*html*/ ctx[0] === void 0) add_render_callback(() => /*div_input_handler*/ ctx[6].call(div));
-    			add_location(div, file, 151, 1, 5066);
-    			add_location(main, file, 150, 0, 5057);
+    			attr_dev(div, "class", "svelte-1k4ll2g");
+    			if (/*thisText*/ ctx[2] === void 0 || /*thisHtml*/ ctx[1] === void 0) add_render_callback(() => /*div_input_handler*/ ctx[9].call(div));
+    			add_location(div, file, 96, 1, 2994);
+    			add_location(main, file, 95, 0, 2986);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
@@ -458,32 +594,40 @@ var app = (function () {
     		m: function mount(target, anchor) {
     			insert_dev(target, main, anchor);
     			append_dev(main, div);
-    			/*div_binding*/ ctx[5](div);
+    			/*div_binding*/ ctx[8](div);
 
-    			if (/*html*/ ctx[0] !== void 0) {
-    				div.innerHTML = /*html*/ ctx[0];
+    			if (/*thisText*/ ctx[2] !== void 0) {
+    				div.textContent = /*thisText*/ ctx[2];
+    			}
+
+    			if (/*thisHtml*/ ctx[1] !== void 0) {
+    				div.innerHTML = /*thisHtml*/ ctx[1];
     			}
 
     			if (!mounted) {
     				dispose = [
-    					listen_dev(div, "input", /*div_input_handler*/ ctx[6]),
-    					listen_dev(div, "keydown", /*onKeyDown*/ ctx[2], false, false, false),
-    					listen_dev(div, "paste", stop_propagation(prevent_default(/*onPaste*/ ctx[3])), false, true, true)
+    					listen_dev(div, "input", /*div_input_handler*/ ctx[9]),
+    					listen_dev(div, "keydown", /*onKeyDown*/ ctx[3], false, false, false),
+    					listen_dev(div, "paste", stop_propagation(prevent_default(/*onPaste*/ ctx[4])), false, true, true)
     				];
 
     				mounted = true;
     			}
     		},
     		p: function update(ctx, [dirty]) {
-    			if (dirty & /*html*/ 1 && /*html*/ ctx[0] !== div.innerHTML) {
-    				div.innerHTML = /*html*/ ctx[0];
+    			if (dirty & /*thisText*/ 4 && /*thisText*/ ctx[2] !== div.textContent) {
+    				div.textContent = /*thisText*/ ctx[2];
+    			}
+
+    			if (dirty & /*thisHtml*/ 2 && /*thisHtml*/ ctx[1] !== div.innerHTML) {
+    				div.innerHTML = /*thisHtml*/ ctx[1];
     			}
     		},
     		i: noop,
     		o: noop,
     		d: function destroy(detaching) {
     			if (detaching) detach_dev(main);
-    			/*div_binding*/ ctx[5](null);
+    			/*div_binding*/ ctx[8](null);
     			mounted = false;
     			run_all(dispose);
     		}
@@ -503,68 +647,28 @@ var app = (function () {
     function instance($$self, $$props, $$invalidate) {
     	let { $$slots: slots = {}, $$scope } = $$props;
     	validate_slots("Editor", slots, []);
-    	let { html } = $$props;
-    	let { textToAdd } = $$props;
+    	let { text = "" } = $$props;
 
-    	const entities = [
-    		{ e: "**", t: ["<b>", "</b>"] },
+    	let { entities = [
+    		{ e: "**", t: ["<strong>", "</strong>"] },
     		{ e: "__", t: ["<strong>", "</strong>"] },
     		{ e: "*", t: ["<em>", "</em>"] },
     		{ e: "_", t: ["<em>", "</em>"] },
     		{ e: "`", t: ["<code>", "</code>"] },
     		{ e: "#", t: ["<cite>", "</cite>"] }
-    	];
+    	] } = $$props;
 
+    	let { textToAdd = null } = $$props;
+    	const dispatch = createEventDispatcher();
     	let setCursorPosition = null;
     	let editorElement = null;
+    	let thisHtml = "";
+    	let thisText = text;
 
-    	const checkForMissingMarkdownAndRemoveTags = (entity, tags, html) => {
-    		const pairs = makePairsOfMatchingIndecies(entity, html);
+    	// // check the initial text to see if there's anything to parse
+    	const r = checkAllMarkdown(entities, text);
 
-    		for (const pair of pairs) {
-    			if (pair.length === 1) {
-    				// determine if this is the start or end of a tag 
-    				const pre = html.substring(pair[0] + entity.length, pair[0] + tags[0].length + entity.length);
-
-    				const post = html.substring(pair[0] - tags[1].length, pair[0]);
-
-    				if (pre === tags[0]) {
-    					// this is the first tag, so there's an unmatched closing tag after it somewhere 
-    					const end = html.substring(pair[0]).indexOf(tags[1]) + html.substring(0, pair[0]).length;
-
-    					// now remove both the opening and closing tags 
-    					return html.substring(0, pair[0] + entity.length) + html.substring(pair[0] + tags[0].length + entity.length, end) + html.substring(end + tags[1].length);
-    				} else if (post === tags[1]) {
-    					// this is the second tag, so there's an unmatched opening tag 
-    					const start = html.substring(0, pair[0]).lastIndexOf(tags[0]);
-
-    					return html.substring(0, start) + html.substring(start + tags[0].length, pair[0] - tags[1].length) + html.substring(pair[0]);
-    				}
-    			}
-    		}
-    	};
-
-    	const checkForMarkdownAndInsertTags = (entity, tags, html) => {
-    		const pairs = makePairsOfMatchingIndecies(entity, html);
-
-    		for (const pair of pairs) {
-    			if (pair.length === 2 && pair[0] + 1 !== pair[1]) {
-    				// get the positions that the tags should exist if they did 
-    				const pre = html.substring(pair[0] + entity.length, pair[0] + tags[0].length + entity.length);
-
-    				const pre2 = html.substring(pair[1] + entity.length, pair[1] + tags[0].length + entity.length);
-    				const post = html.substring(pair[1] - tags[1].length, pair[1]);
-
-    				if (pre2 === tags[0]) {
-    					// we're before the first instance of the tag, do nothing
-    					return;
-    				} else if (pre !== tags[0] && post !== tags[1]) {
-    					// add the tags and stop searching for more things to fix
-    					return html.substring(0, pair[0] + entity.length) + tags[0] + html.substring(pair[0] + entity.length, pair[1]) + tags[1] + html.substring(pair[1], html.length);
-    				}
-    			}
-    		}
-    	};
+    	r !== undefined ? thisHtml = r : thisHtml = thisText;
 
     	const insertTextAtCursor = text => {
     		// reset the cursor position after the inserted text 
@@ -586,7 +690,14 @@ var app = (function () {
 
     		// reassign html with its own content so we force a reformatting of the 
     		// new content in the case it included markdown
-    		$$invalidate(0, html = editorElement.innerHTML);
+    		$$invalidate(1, thisHtml = editorElement.innerHTML);
+    	};
+
+    	const dispatchContentChange = () => {
+    		if (editorElement !== null) {
+    			// dispatch that the content has changed with both text and html
+    			dispatch("contentChange", { text: thisText, html: thisHtml });
+    		}
     	};
 
     	afterUpdate(() => {
@@ -596,6 +707,8 @@ var app = (function () {
 
     			setCursorPosition = null;
     		}
+
+    		dispatchContentChange();
     	});
 
     	const onKeyDown = e => {
@@ -613,7 +726,7 @@ var app = (function () {
     		insertTextAtCursor(pastedData);
     	};
 
-    	const writable_props = ["html", "textToAdd"];
+    	const writable_props = ["text", "entities", "textToAdd"];
 
     	Object.keys($$props).forEach(key => {
     		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<Editor> was created with unknown prop '${key}'`);
@@ -622,42 +735,52 @@ var app = (function () {
     	function div_binding($$value) {
     		binding_callbacks[$$value ? "unshift" : "push"](() => {
     			editorElement = $$value;
-    			$$invalidate(1, editorElement);
+    			$$invalidate(0, editorElement);
     		});
     	}
 
     	function div_input_handler() {
-    		html = this.innerHTML;
-    		(($$invalidate(0, html), $$invalidate(4, textToAdd)), $$invalidate(1, editorElement));
+    		thisText = this.textContent;
+    		thisHtml = this.innerHTML;
+    		$$invalidate(2, thisText);
+    		((($$invalidate(1, thisHtml), $$invalidate(7, textToAdd)), $$invalidate(6, entities)), $$invalidate(0, editorElement));
     	}
 
     	$$self.$$set = $$props => {
-    		if ("html" in $$props) $$invalidate(0, html = $$props.html);
-    		if ("textToAdd" in $$props) $$invalidate(4, textToAdd = $$props.textToAdd);
+    		if ("text" in $$props) $$invalidate(5, text = $$props.text);
+    		if ("entities" in $$props) $$invalidate(6, entities = $$props.entities);
+    		if ("textToAdd" in $$props) $$invalidate(7, textToAdd = $$props.textToAdd);
     	};
 
     	$$self.$capture_state = () => ({
     		afterUpdate,
+    		createEventDispatcher,
     		saveCaretPosition,
     		getCaretPosition,
-    		makePairsOfMatchingIndecies,
-    		html,
-    		textToAdd,
+    		checkAllMarkdown,
+    		text,
     		entities,
+    		textToAdd,
+    		dispatch,
     		setCursorPosition,
     		editorElement,
-    		checkForMissingMarkdownAndRemoveTags,
-    		checkForMarkdownAndInsertTags,
+    		thisHtml,
+    		thisText,
+    		r,
     		insertTextAtCursor,
+    		dispatchContentChange,
     		onKeyDown,
     		onPaste
     	});
 
     	$$self.$inject_state = $$props => {
-    		if ("html" in $$props) $$invalidate(0, html = $$props.html);
-    		if ("textToAdd" in $$props) $$invalidate(4, textToAdd = $$props.textToAdd);
+    		if ("text" in $$props) $$invalidate(5, text = $$props.text);
+    		if ("entities" in $$props) $$invalidate(6, entities = $$props.entities);
+    		if ("textToAdd" in $$props) $$invalidate(7, textToAdd = $$props.textToAdd);
     		if ("setCursorPosition" in $$props) setCursorPosition = $$props.setCursorPosition;
-    		if ("editorElement" in $$props) $$invalidate(1, editorElement = $$props.editorElement);
+    		if ("editorElement" in $$props) $$invalidate(0, editorElement = $$props.editorElement);
+    		if ("thisHtml" in $$props) $$invalidate(1, thisHtml = $$props.thisHtml);
+    		if ("thisText" in $$props) $$invalidate(2, thisText = $$props.thisText);
     	};
 
     	if ($$props && "$$inject" in $$props) {
@@ -665,45 +788,35 @@ var app = (function () {
     	}
 
     	$$self.$$.update = () => {
-    		if ($$self.$$.dirty & /*textToAdd, html, editorElement*/ 19) {
+    		if ($$self.$$.dirty & /*textToAdd, entities, thisHtml, editorElement*/ 195) {
     			 {
     				// insert any text 
     				if (textToAdd !== undefined && textToAdd !== null) {
     					insertTextAtCursor(textToAdd);
     				}
 
-    				const checkAllMarkdown = () => {
-    					for (const entity of entities) {
-    						const h = checkForMarkdownAndInsertTags(entity.e, entity.t, html);
-
-    						if (h !== undefined) {
-    							return h;
-    						} else {
-    							const n = checkForMissingMarkdownAndRemoveTags(entity.e, entity.t, html);
-    							if (n !== undefined) return n;
-    						}
-    					}
-    				};
-
-    				const res = checkAllMarkdown();
+    				const res = checkAllMarkdown(entities, thisHtml);
 
     				// we updated formatting
-    				if (res !== undefined) {
+    				if (res !== undefined && editorElement !== null) {
     					// record the caret pos so we can reset it after updating content
     					setCursorPosition = saveCaretPosition(editorElement);
 
     					// set the updated HTML with the new fomatting
-    					$$invalidate(0, html = res);
+    					$$invalidate(1, thisHtml = res);
     				}
     			}
     		}
     	};
 
     	return [
-    		html,
     		editorElement,
+    		thisHtml,
+    		thisText,
     		onKeyDown,
     		onPaste,
+    		text,
+    		entities,
     		textToAdd,
     		div_binding,
     		div_input_handler
@@ -713,7 +826,7 @@ var app = (function () {
     class Editor extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance, create_fragment, safe_not_equal, { html: 0, textToAdd: 4 });
+    		init(this, options, instance, create_fragment, safe_not_equal, { text: 5, entities: 6, textToAdd: 7 });
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
@@ -721,24 +834,21 @@ var app = (function () {
     			options,
     			id: create_fragment.name
     		});
-
-    		const { ctx } = this.$$;
-    		const props = options.props || {};
-
-    		if (/*html*/ ctx[0] === undefined && !("html" in props)) {
-    			console.warn("<Editor> was created without expected prop 'html'");
-    		}
-
-    		if (/*textToAdd*/ ctx[4] === undefined && !("textToAdd" in props)) {
-    			console.warn("<Editor> was created without expected prop 'textToAdd'");
-    		}
     	}
 
-    	get html() {
+    	get text() {
     		throw new Error("<Editor>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
     	}
 
-    	set html(value) {
+    	set text(value) {
+    		throw new Error("<Editor>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+
+    	get entities() {
+    		throw new Error("<Editor>: Props cannot be read directly from the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
+    	}
+
+    	set entities(value) {
     		throw new Error("<Editor>: Props cannot be set directly on the component instance unless compiling with 'accessors: true' or '<svelte:options accessors/>'");
     	}
 
@@ -751,70 +861,88 @@ var app = (function () {
     	}
     }
 
-    /* demo\App.svelte generated by Svelte v3.31.0 */
-    const file$1 = "demo\\App.svelte";
+    /* demo/ExampleLayout.svelte generated by Svelte v3.31.0 */
+
+    const file$1 = "demo/ExampleLayout.svelte";
+    const get_demo_slot_changes = dirty => ({});
+    const get_demo_slot_context = ctx => ({});
+    const get_description_slot_changes = dirty => ({});
+    const get_description_slot_context = ctx => ({});
 
     function create_fragment$1(ctx) {
-    	let main;
-    	let button;
-    	let t1;
-    	let editor;
+    	let section;
+    	let div0;
+    	let t;
+    	let div1;
     	let current;
-    	let mounted;
-    	let dispose;
-
-    	editor = new Editor({
-    			props: {
-    				html: /*html*/ ctx[1],
-    				textToAdd: /*textToAdd*/ ctx[0]
-    			},
-    			$$inline: true
-    		});
+    	const description_slot_template = /*#slots*/ ctx[1].description;
+    	const description_slot = create_slot(description_slot_template, ctx, /*$$scope*/ ctx[0], get_description_slot_context);
+    	const demo_slot_template = /*#slots*/ ctx[1].demo;
+    	const demo_slot = create_slot(demo_slot_template, ctx, /*$$scope*/ ctx[0], get_demo_slot_context);
 
     	const block = {
     		c: function create() {
-    			main = element("main");
-    			button = element("button");
-    			button.textContent = "add content";
-    			t1 = space();
-    			create_component(editor.$$.fragment);
-    			add_location(button, file$1, 22, 1, 536);
-    			add_location(main, file$1, 21, 0, 527);
+    			section = element("section");
+    			div0 = element("div");
+    			if (description_slot) description_slot.c();
+    			t = space();
+    			div1 = element("div");
+    			if (demo_slot) demo_slot.c();
+    			attr_dev(div0, "class", "desc svelte-1ici02u");
+    			add_location(div0, file$1, 5, 1, 32);
+    			attr_dev(div1, "class", "demo svelte-1ici02u");
+    			add_location(div1, file$1, 8, 1, 95);
+    			attr_dev(section, "class", "svelte-1ici02u");
+    			add_location(section, file$1, 4, 0, 21);
     		},
     		l: function claim(nodes) {
     			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
     		},
     		m: function mount(target, anchor) {
-    			insert_dev(target, main, anchor);
-    			append_dev(main, button);
-    			append_dev(main, t1);
-    			mount_component(editor, main, null);
-    			current = true;
+    			insert_dev(target, section, anchor);
+    			append_dev(section, div0);
 
-    			if (!mounted) {
-    				dispose = listen_dev(button, "click", /*updateHtml*/ ctx[2], false, false, false);
-    				mounted = true;
+    			if (description_slot) {
+    				description_slot.m(div0, null);
     			}
+
+    			append_dev(section, t);
+    			append_dev(section, div1);
+
+    			if (demo_slot) {
+    				demo_slot.m(div1, null);
+    			}
+
+    			current = true;
     		},
     		p: function update(ctx, [dirty]) {
-    			const editor_changes = {};
-    			if (dirty & /*textToAdd*/ 1) editor_changes.textToAdd = /*textToAdd*/ ctx[0];
-    			editor.$set(editor_changes);
+    			if (description_slot) {
+    				if (description_slot.p && dirty & /*$$scope*/ 1) {
+    					update_slot(description_slot, description_slot_template, ctx, /*$$scope*/ ctx[0], dirty, get_description_slot_changes, get_description_slot_context);
+    				}
+    			}
+
+    			if (demo_slot) {
+    				if (demo_slot.p && dirty & /*$$scope*/ 1) {
+    					update_slot(demo_slot, demo_slot_template, ctx, /*$$scope*/ ctx[0], dirty, get_demo_slot_changes, get_demo_slot_context);
+    				}
+    			}
     		},
     		i: function intro(local) {
     			if (current) return;
-    			transition_in(editor.$$.fragment, local);
+    			transition_in(description_slot, local);
+    			transition_in(demo_slot, local);
     			current = true;
     		},
     		o: function outro(local) {
-    			transition_out(editor.$$.fragment, local);
+    			transition_out(description_slot, local);
+    			transition_out(demo_slot, local);
     			current = false;
     		},
     		d: function destroy(detaching) {
-    			if (detaching) detach_dev(main);
-    			destroy_component(editor);
-    			mounted = false;
-    			dispose();
+    			if (detaching) detach_dev(section);
+    			if (description_slot) description_slot.d(detaching);
+    			if (demo_slot) demo_slot.d(detaching);
     		}
     	};
 
@@ -831,8 +959,231 @@ var app = (function () {
 
     function instance$1($$self, $$props, $$invalidate) {
     	let { $$slots: slots = {}, $$scope } = $$props;
-    	validate_slots("App", slots, []);
-    	let html = "hello, welcome!";
+    	validate_slots("ExampleLayout", slots, ['description','demo']);
+    	const writable_props = [];
+
+    	Object.keys($$props).forEach(key => {
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<ExampleLayout> was created with unknown prop '${key}'`);
+    	});
+
+    	$$self.$$set = $$props => {
+    		if ("$$scope" in $$props) $$invalidate(0, $$scope = $$props.$$scope);
+    	};
+
+    	return [$$scope, slots];
+    }
+
+    class ExampleLayout extends SvelteComponentDev {
+    	constructor(options) {
+    		super(options);
+    		init(this, options, instance$1, create_fragment$1, safe_not_equal, {});
+
+    		dispatch_dev("SvelteRegisterComponent", {
+    			component: this,
+    			tagName: "ExampleLayout",
+    			options,
+    			id: create_fragment$1.name
+    		});
+    	}
+    }
+
+    /* demo/Example1.svelte generated by Svelte v3.31.0 */
+    const file$2 = "demo/Example1.svelte";
+
+    // (25:1) <div slot="description">
+    function create_description_slot(ctx) {
+    	let div;
+    	let h3;
+    	let t1;
+    	let p;
+
+    	const block = {
+    		c: function create() {
+    			div = element("div");
+    			h3 = element("h3");
+    			h3.textContent = "Preview inline markdown styling as you type.";
+    			t1 = space();
+    			p = element("p");
+    			p.textContent = "Try adding something—bold, italics, and code are all valid.";
+    			add_location(h3, file$2, 26, 2, 668);
+    			add_location(p, file$2, 27, 2, 724);
+    			attr_dev(div, "slot", "description");
+    			add_location(div, file$2, 24, 1, 576);
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, div, anchor);
+    			append_dev(div, h3);
+    			append_dev(div, t1);
+    			append_dev(div, p);
+    		},
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(div);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_description_slot.name,
+    		type: "slot",
+    		source: "(25:1) <div slot=\\\"description\\\">",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    // (30:1) <div slot="demo">
+    function create_demo_slot(ctx) {
+    	let div;
+    	let editor;
+    	let current;
+
+    	editor = new Editor({
+    			props: {
+    				text: /*text*/ ctx[1],
+    				textToAdd: /*textToAdd*/ ctx[0]
+    			},
+    			$$inline: true
+    		});
+
+    	const block = {
+    		c: function create() {
+    			div = element("div");
+    			create_component(editor.$$.fragment);
+    			attr_dev(div, "slot", "demo");
+    			add_location(div, file$2, 29, 1, 800);
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, div, anchor);
+    			mount_component(editor, div, null);
+    			current = true;
+    		},
+    		p: function update(ctx, dirty) {
+    			const editor_changes = {};
+    			if (dirty & /*textToAdd*/ 1) editor_changes.textToAdd = /*textToAdd*/ ctx[0];
+    			editor.$set(editor_changes);
+    		},
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(editor.$$.fragment, local);
+    			current = true;
+    		},
+    		o: function outro(local) {
+    			transition_out(editor.$$.fragment, local);
+    			current = false;
+    		},
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(div);
+    			destroy_component(editor);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_demo_slot.name,
+    		type: "slot",
+    		source: "(30:1) <div slot=\\\"demo\\\">",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    // (24:0) <ExampleLayout>
+    function create_default_slot(ctx) {
+    	let t;
+
+    	const block = {
+    		c: function create() {
+    			t = space();
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, t, anchor);
+    		},
+    		p: noop,
+    		i: noop,
+    		o: noop,
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(t);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_default_slot.name,
+    		type: "slot",
+    		source: "(24:0) <ExampleLayout>",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    function create_fragment$2(ctx) {
+    	let examplelayout;
+    	let current;
+
+    	examplelayout = new ExampleLayout({
+    			props: {
+    				$$slots: {
+    					default: [create_default_slot],
+    					demo: [create_demo_slot],
+    					description: [create_description_slot]
+    				},
+    				$$scope: { ctx }
+    			},
+    			$$inline: true
+    		});
+
+    	const block = {
+    		c: function create() {
+    			create_component(examplelayout.$$.fragment);
+    		},
+    		l: function claim(nodes) {
+    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
+    		},
+    		m: function mount(target, anchor) {
+    			mount_component(examplelayout, target, anchor);
+    			current = true;
+    		},
+    		p: function update(ctx, [dirty]) {
+    			const examplelayout_changes = {};
+
+    			if (dirty & /*$$scope, textToAdd*/ 9) {
+    				examplelayout_changes.$$scope = { dirty, ctx };
+    			}
+
+    			examplelayout.$set(examplelayout_changes);
+    		},
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(examplelayout.$$.fragment, local);
+    			current = true;
+    		},
+    		o: function outro(local) {
+    			transition_out(examplelayout.$$.fragment, local);
+    			current = false;
+    		},
+    		d: function destroy(detaching) {
+    			destroy_component(examplelayout, detaching);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_fragment$2.name,
+    		type: "component",
+    		source: "",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    function instance$2($$self, $$props, $$invalidate) {
+    	let { $$slots: slots = {}, $$scope } = $$props;
+    	validate_slots("Example1", slots, []);
+    	let text = "hello, welcome!";
     	let textToAdd = null;
 
     	const updateHtml = () => {
@@ -855,19 +1206,20 @@ var app = (function () {
     	const writable_props = [];
 
     	Object.keys($$props).forEach(key => {
-    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<App> was created with unknown prop '${key}'`);
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<Example1> was created with unknown prop '${key}'`);
     	});
 
     	$$self.$capture_state = () => ({
     		afterUpdate,
     		Editor,
-    		html,
+    		ExampleLayout,
+    		text,
     		textToAdd,
     		updateHtml
     	});
 
     	$$self.$inject_state = $$props => {
-    		if ("html" in $$props) $$invalidate(1, html = $$props.html);
+    		if ("text" in $$props) $$invalidate(1, text = $$props.text);
     		if ("textToAdd" in $$props) $$invalidate(0, textToAdd = $$props.textToAdd);
     	};
 
@@ -875,28 +1227,407 @@ var app = (function () {
     		$$self.$inject_state($$props.$$inject);
     	}
 
-    	return [textToAdd, html, updateHtml];
+    	return [textToAdd, text];
+    }
+
+    class Example1 extends SvelteComponentDev {
+    	constructor(options) {
+    		super(options);
+    		init(this, options, instance$2, create_fragment$2, safe_not_equal, {});
+
+    		dispatch_dev("SvelteRegisterComponent", {
+    			component: this,
+    			tagName: "Example1",
+    			options,
+    			id: create_fragment$2.name
+    		});
+    	}
+    }
+
+    /* demo/Example2.svelte generated by Svelte v3.31.0 */
+    const file$3 = "demo/Example2.svelte";
+
+    // (15:1) <div slot="description">
+    function create_description_slot$1(ctx) {
+    	let div;
+    	let h3;
+    	let t1;
+    	let p;
+    	let t2;
+    	let code;
+    	let t4;
+
+    	const block = {
+    		c: function create() {
+    			div = element("div");
+    			h3 = element("h3");
+    			h3.textContent = "Listen to content change events.";
+    			t1 = space();
+    			p = element("p");
+    			t2 = text("Changes are dispatched though the ");
+    			code = element("code");
+    			code.textContent = "contentChange";
+    			t4 = text(" event.");
+    			add_location(h3, file$3, 15, 2, 332);
+    			add_location(code, file$3, 16, 39, 413);
+    			add_location(p, file$3, 16, 2, 376);
+    			attr_dev(div, "slot", "description");
+    			add_location(div, file$3, 14, 1, 304);
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, div, anchor);
+    			append_dev(div, h3);
+    			append_dev(div, t1);
+    			append_dev(div, p);
+    			append_dev(p, t2);
+    			append_dev(p, code);
+    			append_dev(p, t4);
+    		},
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(div);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_description_slot$1.name,
+    		type: "slot",
+    		source: "(15:1) <div slot=\\\"description\\\">",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    // (19:1) <div slot="demo">
+    function create_demo_slot$1(ctx) {
+    	let div;
+    	let editor;
+    	let t0;
+    	let p0;
+    	let t2;
+    	let code0;
+    	let t3_value = /*latestContent*/ ctx[0]?.html + "";
+    	let t3;
+    	let t4;
+    	let p1;
+    	let t6;
+    	let code1;
+    	let t7_value = /*latestContent*/ ctx[0]?.text + "";
+    	let t7;
+    	let current;
+
+    	editor = new Editor({
+    			props: { text: /*text*/ ctx[1] },
+    			$$inline: true
+    		});
+
+    	editor.$on("contentChange", /*handleContentChange*/ ctx[2]);
+
+    	const block = {
+    		c: function create() {
+    			div = element("div");
+    			create_component(editor.$$.fragment);
+    			t0 = space();
+    			p0 = element("p");
+    			p0.textContent = "Current editor HTML:";
+    			t2 = space();
+    			code0 = element("code");
+    			t3 = text(t3_value);
+    			t4 = space();
+    			p1 = element("p");
+    			p1.textContent = "Current editor content:";
+    			t6 = space();
+    			code1 = element("code");
+    			t7 = text(t7_value);
+    			add_location(p0, file$3, 20, 2, 539);
+    			add_location(code0, file$3, 21, 2, 569);
+    			add_location(p1, file$3, 24, 2, 613);
+    			add_location(code1, file$3, 25, 2, 646);
+    			attr_dev(div, "slot", "demo");
+    			add_location(div, file$3, 18, 1, 460);
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, div, anchor);
+    			mount_component(editor, div, null);
+    			append_dev(div, t0);
+    			append_dev(div, p0);
+    			append_dev(div, t2);
+    			append_dev(div, code0);
+    			append_dev(code0, t3);
+    			append_dev(div, t4);
+    			append_dev(div, p1);
+    			append_dev(div, t6);
+    			append_dev(div, code1);
+    			append_dev(code1, t7);
+    			current = true;
+    		},
+    		p: function update(ctx, dirty) {
+    			if ((!current || dirty & /*latestContent*/ 1) && t3_value !== (t3_value = /*latestContent*/ ctx[0]?.html + "")) set_data_dev(t3, t3_value);
+    			if ((!current || dirty & /*latestContent*/ 1) && t7_value !== (t7_value = /*latestContent*/ ctx[0]?.text + "")) set_data_dev(t7, t7_value);
+    		},
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(editor.$$.fragment, local);
+    			current = true;
+    		},
+    		o: function outro(local) {
+    			transition_out(editor.$$.fragment, local);
+    			current = false;
+    		},
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(div);
+    			destroy_component(editor);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_demo_slot$1.name,
+    		type: "slot",
+    		source: "(19:1) <div slot=\\\"demo\\\">",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    // (14:0) <ExampleLayout>
+    function create_default_slot$1(ctx) {
+    	let t;
+
+    	const block = {
+    		c: function create() {
+    			t = space();
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, t, anchor);
+    		},
+    		p: noop,
+    		i: noop,
+    		o: noop,
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(t);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_default_slot$1.name,
+    		type: "slot",
+    		source: "(14:0) <ExampleLayout>",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    function create_fragment$3(ctx) {
+    	let examplelayout;
+    	let current;
+
+    	examplelayout = new ExampleLayout({
+    			props: {
+    				$$slots: {
+    					default: [create_default_slot$1],
+    					demo: [create_demo_slot$1],
+    					description: [create_description_slot$1]
+    				},
+    				$$scope: { ctx }
+    			},
+    			$$inline: true
+    		});
+
+    	const block = {
+    		c: function create() {
+    			create_component(examplelayout.$$.fragment);
+    		},
+    		l: function claim(nodes) {
+    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
+    		},
+    		m: function mount(target, anchor) {
+    			mount_component(examplelayout, target, anchor);
+    			current = true;
+    		},
+    		p: function update(ctx, [dirty]) {
+    			const examplelayout_changes = {};
+
+    			if (dirty & /*$$scope, latestContent*/ 9) {
+    				examplelayout_changes.$$scope = { dirty, ctx };
+    			}
+
+    			examplelayout.$set(examplelayout_changes);
+    		},
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(examplelayout.$$.fragment, local);
+    			current = true;
+    		},
+    		o: function outro(local) {
+    			transition_out(examplelayout.$$.fragment, local);
+    			current = false;
+    		},
+    		d: function destroy(detaching) {
+    			destroy_component(examplelayout, detaching);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_fragment$3.name,
+    		type: "component",
+    		source: "",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    function instance$3($$self, $$props, $$invalidate) {
+    	let { $$slots: slots = {}, $$scope } = $$props;
+    	validate_slots("Example2", slots, []);
+    	let text = "I **can** be changed.";
+    	let latestContent = null;
+
+    	const handleContentChange = e => {
+    		$$invalidate(0, latestContent = { text: e.detail.text, html: e.detail.html });
+    	};
+
+    	const writable_props = [];
+
+    	Object.keys($$props).forEach(key => {
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<Example2> was created with unknown prop '${key}'`);
+    	});
+
+    	$$self.$capture_state = () => ({
+    		Editor,
+    		ExampleLayout,
+    		text,
+    		latestContent,
+    		handleContentChange
+    	});
+
+    	$$self.$inject_state = $$props => {
+    		if ("text" in $$props) $$invalidate(1, text = $$props.text);
+    		if ("latestContent" in $$props) $$invalidate(0, latestContent = $$props.latestContent);
+    	};
+
+    	if ($$props && "$$inject" in $$props) {
+    		$$self.$inject_state($$props.$$inject);
+    	}
+
+    	return [latestContent, text, handleContentChange];
+    }
+
+    class Example2 extends SvelteComponentDev {
+    	constructor(options) {
+    		super(options);
+    		init(this, options, instance$3, create_fragment$3, safe_not_equal, {});
+
+    		dispatch_dev("SvelteRegisterComponent", {
+    			component: this,
+    			tagName: "Example2",
+    			options,
+    			id: create_fragment$3.name
+    		});
+    	}
+    }
+
+    /* demo/App.svelte generated by Svelte v3.31.0 */
+    const file$4 = "demo/App.svelte";
+
+    function create_fragment$4(ctx) {
+    	let t0;
+    	let main;
+    	let example1;
+    	let t1;
+    	let example2;
+    	let current;
+    	example1 = new Example1({ $$inline: true });
+    	example2 = new Example2({ $$inline: true });
+
+    	const block = {
+    		c: function create() {
+    			t0 = space();
+    			main = element("main");
+    			create_component(example1.$$.fragment);
+    			t1 = space();
+    			create_component(example2.$$.fragment);
+    			document.title = "Svelte Inline Markdown Editor";
+    			attr_dev(main, "class", "svelte-1zdmfn");
+    			add_location(main, file$4, 9, 0, 179);
+    		},
+    		l: function claim(nodes) {
+    			throw new Error("options.hydrate only works if the component was compiled with the `hydratable: true` option");
+    		},
+    		m: function mount(target, anchor) {
+    			insert_dev(target, t0, anchor);
+    			insert_dev(target, main, anchor);
+    			mount_component(example1, main, null);
+    			append_dev(main, t1);
+    			mount_component(example2, main, null);
+    			current = true;
+    		},
+    		p: noop,
+    		i: function intro(local) {
+    			if (current) return;
+    			transition_in(example1.$$.fragment, local);
+    			transition_in(example2.$$.fragment, local);
+    			current = true;
+    		},
+    		o: function outro(local) {
+    			transition_out(example1.$$.fragment, local);
+    			transition_out(example2.$$.fragment, local);
+    			current = false;
+    		},
+    		d: function destroy(detaching) {
+    			if (detaching) detach_dev(t0);
+    			if (detaching) detach_dev(main);
+    			destroy_component(example1);
+    			destroy_component(example2);
+    		}
+    	};
+
+    	dispatch_dev("SvelteRegisterBlock", {
+    		block,
+    		id: create_fragment$4.name,
+    		type: "component",
+    		source: "",
+    		ctx
+    	});
+
+    	return block;
+    }
+
+    function instance$4($$self, $$props, $$invalidate) {
+    	let { $$slots: slots = {}, $$scope } = $$props;
+    	validate_slots("App", slots, []);
+    	const writable_props = [];
+
+    	Object.keys($$props).forEach(key => {
+    		if (!~writable_props.indexOf(key) && key.slice(0, 2) !== "$$") console.warn(`<App> was created with unknown prop '${key}'`);
+    	});
+
+    	$$self.$capture_state = () => ({ Example1, Example2 });
+    	return [];
     }
 
     class App extends SvelteComponentDev {
     	constructor(options) {
     		super(options);
-    		init(this, options, instance$1, create_fragment$1, safe_not_equal, {});
+    		init(this, options, instance$4, create_fragment$4, safe_not_equal, {});
 
     		dispatch_dev("SvelteRegisterComponent", {
     			component: this,
     			tagName: "App",
     			options,
-    			id: create_fragment$1.name
+    			id: create_fragment$4.name
     		});
     	}
     }
 
     const app = new App({
     	target: document.body,
-    	props: {
-    		html: "<h1>hey there peeps</h1>",
-    	},
     });
 
     return app;
