@@ -1,7 +1,10 @@
 <script>
 	import { afterUpdate, createEventDispatcher } from "svelte";
-	import { saveCaretPosition, getCaretPosition, getRange, getTextNodeAtPosition } from "./utils/rangeModifiers"
-	import { checkAllMarkdown } from "./utils/stringModifiers"
+	import { saveCaretPosition, 
+			 getCaretPosition, 
+			 getRange, 
+			 getTextNodeAtPosition } from "./utils/rangeModifiers"
+	import { checkAllMarkdown, insertMarkdownAroundSelection } from "./utils/stringModifiers"
 
 	export let text = "";
 	export let entities = [{e: "**", t: ["<strong>", "</strong>"]}, {e: "__", t: ["<strong>", "</strong>"]}, {e: "*", t: ["<em>", "</em>"]}, {e: "_", t: ["<em>", "</em>"]}, {e: "`", t: ["<code>", "</code>"]}, {e: "#", t: ["<cite>", "</cite>"]}]
@@ -16,8 +19,15 @@
 	let thisHtml = ""
 	let thisText = text;
 
-	// // check the initial text to see if there's anything to parse
-	const r = checkAllMarkdown(entities, text)
+	// check the initial text to see if there's anything to parse
+	let r = [text]
+	let res = r[0]
+	while (res !== undefined) {
+		// each time we look through and check we get one single reformat
+		// keep doing this until there's nothing left to format
+		res = checkAllMarkdown(entities, r[0])
+		if (res !== undefined) r = res
+	}
 	r !== undefined ? thisHtml = r[0] : thisHtml = thisText
 
 
@@ -56,31 +66,18 @@
 		// TODO: keep track of which key was pressed and if it was one of the ones
 		// in a markdown entity, reformat the text. Otherwise don't recheck formatting.
 
+		// TODO: construct this list of entities to check for from the original entities prop
 		if (["*", "_", "`"].includes(e.key)) {
 			const [range, selection] = getRange()
 
-			if (range.startOffset !== range.endOffset) {
+			if (range.startOffset !== range.endOffset || 
+				!range.startContainer.isSameNode(range.endContainer)) {
 
 				e.preventDefault()
 				e.stopPropagation()
 
-				// get the range
-				const el1 = range.startContainer 
-				const el2 = range.endContainer
-
-				if (!el1.isSameNode(el2)) {
-					// the range end and start are in different nodes, so add the character to the correct
-					// positions in both elements 
-					const n1 = el1.textContent.substring(0, range.startOffset) + e.key + el1.textContent.substring(range.startOffset)
-					const n2 = el2.textContent.substring(0, range.endOffset) + e.key + el2.textContent.substring(range.endOffset)
-					el1.textContent = n1;
-					el2.textContent = n2;
-				} else {
-					// the end and start are in the same node
-					const c = el1.textContent;
-					const n = c.substring(0, range.startOffset) + e.key + c.substring(range.startOffset, range.endOffset) + e.key + c.substring(range.endOffset)
-					el1.textContent = n;
-				}
+				// add the markdown entity around the selected range 
+				insertMarkdownAroundSelection(e.key, range, editorElement)
 
 				setRangeOnUpdate = true;
 				// reassign html with its own content so we force a reformatting of the new content
@@ -103,14 +100,11 @@
 			setCursorPosition();
 			setCursorPosition = null;
 		}
-
 		if (setRangeOnUpdate !== null && setRangeOnUpdate !== false) {
 			// set the range 
 			setRangeOnUpdate()
 			setRangeOnUpdate = null;
-
 		}
-		
 		dispatchContentChange()
 	});
 
@@ -120,6 +114,7 @@
 			insertTextAtCursor(textToAdd)
 		}
 
+		// check for any added or removed markdown 
 		const res = checkAllMarkdown(entities, thisHtml)
 
 		// we updated formatting
@@ -129,14 +124,13 @@
 			// set the updated HTML with the new fomatting
 			thisHtml = res[0];
 
-			// select the newly created elements 
+			// select the newly created elements if there was a selected range before
 			if (setRangeOnUpdate === true) {
 				setRangeOnUpdate = () => {
 					const n1 = getTextNodeAtPosition(editorElement, res[1])
-					const n2 = getTextNodeAtPosition(editorElement, res[2])
-
-					console.log(n1)
-					console.log(n2)
+					// move the cursor to the next position so we don't end up inserting any
+					// subsequent changes to the inside of the styling tags
+					const n2 = getTextNodeAtPosition(editorElement, res[2] + 1)
 
 					const [range, selection] = getRange()
 					range.setStart(n1.node, n1.position);
@@ -144,11 +138,9 @@
 				    selection.removeAllRanges();
 				    selection.addRange(range);
 				}
-				
 			}
 		}
 	}
-
 </script>
 
 <div

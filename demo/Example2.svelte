@@ -2,7 +2,7 @@
 	import Editor from "../src/Editor.svelte";
 	import ExampleLayout from "./ExampleLayout.svelte"
 
-	let text = "I **can** be changed.";
+	let text = "I **can** be _changed_.";
 	let latestContent = null;
 	
 	const handleContentChange = (e) => {
