@@ -1,4 +1,4 @@
-# Svelte Inline Markup Editor
+# Svelte Inline Markdown Editor
 
 A small text editor that shows a live preview of markdown formatting as you type.
 
@@ -30,4 +30,10 @@ Then run the demo:
 
 ```
 npm run dev
+```
+
+Run the tests:
+
+```
+npm run test
 ```
